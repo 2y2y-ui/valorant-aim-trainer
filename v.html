@@ -1,0 +1,303 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <title>VALORANT Aim Trainer</title>
+    <style>
+        body { margin: 0; background-color: #000; color: white; font-family: sans-serif; }
+        canvas { display: block; }
+        #ui-container {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            flex-direction: column;
+            text-align: center;
+        }
+        .panel {
+            background-color: rgba(0, 0, 0, 0.7);
+            padding: 20px;
+            border-radius: 10px;
+            border: 1px solid #ff4655;
+        }
+        h1 { color: #ff4655; }
+        label { margin-top: 10px; display: block; }
+        input {
+            width: 100px;
+            padding: 5px;
+            margin-top: 5px;
+            text-align: center;
+            background-color: #333;
+            color: white;
+            border: 1px solid #555;
+        }
+        button {
+            margin-top: 20px;
+            padding: 10px 20px;
+            font-size: 1.2em;
+            background-color: #ff4655;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+        button:hover { background-color: #e03c4a; }
+        #game-info {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            font-size: 1.5em;
+            text-shadow: 2px 2px 4px #000;
+        }
+        #crosshair {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            width: 4px;
+            height: 4px;
+            background-color: #0f0;
+            border-radius: 50%;
+            transform: translate(-50%, -50%);
+            pointer-events: none; /* マウスイベントを透過させる */
+        }
+        .hidden { display: none; }
+    </style>
+</head>
+<body>
+    <div id="ui-container">
+        <div id="settings-panel" class="panel">
+            <h1>VALORANT Aim Trainer</h1>
+            <p>VALORANTの感度とマウスDPIを入力してください。</p>
+            <div>
+                <label for="sensitivity">VALORANT Sensitivity</label>
+                <input type="number" id="sensitivity" value="0.4" step="0.01">
+            </div>
+            <div>
+                <label for="dpi">Mouse DPI (参考値)</label>
+                <input type="number" id="dpi" value="800" step="100">
+            </div>
+            <p id="edpi-info">eDPI: 320</p>
+            <button id="start-button">START</button>
+            <p style="margin-top:20px; font-size: 0.8em;">画面をクリックして開始 | Escキーでカーソル解除</p>
+        </div>
+        <div id="result-panel" class="panel hidden">
+            <h1>Result</h1>
+            <p id="final-score"></p>
+            <p id="final-accuracy"></p>
+            <button id="restart-button">RESTART</button>
+        </div>
+    </div>
+
+    <div id="game-info" class="hidden">
+        <div>Time: <span id="time-left">60</span></div>
+        <div>Score: <span id="score">0</span></div>
+    </div>
+    
+    <div id="crosshair" class="hidden"></div>
+
+    <script type="importmap">
+    {
+        "imports": {
+            "three": "https://unpkg.com/three@0.160.0/build/three.module.js"
+        }
+    }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+
+        let scene, camera, renderer;
+        let targets = [];
+        let score = 0;
+        let timeLeft = 60;
+        let timerId;
+        let isPlaying = false;
+        
+        const valorantYaw = 0.022;
+
+        const sensitivityInput = document.getElementById('sensitivity');
+        const dpiInput = document.getElementById('dpi');
+        const edpiInfo = document.getElementById('edpi-info');
+        
+        function updateEdpi() {
+            const sens = parseFloat(sensitivityInput.value) || 0;
+            const dpi = parseInt(dpiInput.value) || 0;
+            edpiInfo.textContent = `eDPI: ${Math.round(sens * dpi)}`;
+        }
+        sensitivityInput.addEventListener('input', updateEdpi);
+        dpiInput.addEventListener('input', updateEdpi);
+        
+        function init() {
+            // Scene
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x87ceeb);
+            scene.fog = new THREE.Fog(0x87ceeb, 0, 100);
+
+            // Camera
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.position.set(0, 1.6, 0); // 人間の目線の高さ
+
+            // Renderer
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            document.body.appendChild(renderer.domElement);
+
+            // Light
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
+            scene.add(ambientLight);
+            const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+            directionalLight.position.set(5, 10, 7.5);
+            scene.add(directionalLight);
+
+            // Ground
+            const groundGeometry = new THREE.PlaneGeometry(200, 200);
+            const groundMaterial = new THREE.MeshStandardMaterial({ color: 0xcccccc });
+            const ground = new THREE.Mesh(groundGeometry, groundMaterial);
+            ground.rotation.x = -Math.PI / 2;
+            scene.add(ground);
+
+            // Pointer Lock
+            document.body.addEventListener('click', () => {
+                if(isPlaying) document.body.requestPointerLock();
+            });
+
+            document.addEventListener('pointerlockchange', () => {
+                if (document.pointerLockElement === document.body) {
+                    document.addEventListener('mousemove', onMouseMove, false);
+                    document.addEventListener('mousedown', onMouseDown, false);
+                } else {
+                    document.removeEventListener('mousemove', onMouseMove, false);
+                    document.removeEventListener('mousedown', onMouseDown, false);
+                }
+            });
+            
+            // UI Events
+            document.getElementById('start-button').addEventListener('click', startGame);
+            document.getElementById('restart-button').addEventListener('click', startGame);
+
+            window.addEventListener('resize', onWindowResize);
+            animate();
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        let totalShots = 0;
+        let hitShots = 0;
+
+        function startGame() {
+            isPlaying = true;
+            score = 0;
+            timeLeft = 60;
+            totalShots = 0;
+            hitShots = 0;
+
+            document.getElementById('settings-panel').classList.add('hidden');
+            document.getElementById('result-panel').classList.add('hidden');
+            document.getElementById('game-info').classList.remove('hidden');
+            document.getElementById('crosshair').classList.remove('hidden');
+
+            document.getElementById('score').textContent = score;
+            document.getElementById('time-left').textContent = timeLeft;
+
+            // Clear existing targets
+            targets.forEach(target => scene.remove(target));
+            targets = [];
+
+            // Spawn initial targets
+            for (let i = 0; i < 5; i++) {
+                spawnTarget();
+            }
+
+            timerId = setInterval(() => {
+                timeLeft--;
+                document.getElementById('time-left').textContent = timeLeft;
+                if (timeLeft <= 0) {
+                    endGame();
+                }
+            }, 1000);
+            
+            document.body.requestPointerLock();
+        }
+
+        function endGame() {
+            isPlaying = false;
+            clearInterval(timerId);
+            document.exitPointerLock();
+
+            document.getElementById('game-info').classList.add('hidden');
+            document.getElementById('crosshair').classList.add('hidden');
+            document.getElementById('result-panel').classList.remove('hidden');
+
+            document.getElementById('final-score').textContent = `Score: ${score}`;
+            const accuracy = totalShots > 0 ? ((hitShots / totalShots) * 100).toFixed(2) : 0;
+            document.getElementById('final-accuracy').textContent = `Accuracy: ${accuracy}% (${hitShots}/${totalShots})`;
+        }
+
+        const euler = new THREE.Euler(0, 0, 0, 'YXZ');
+        function onMouseMove(event) {
+            if (!isPlaying) return;
+            const sensitivity = parseFloat(document.getElementById('sensitivity').value);
+            const movementX = event.movementX || 0;
+            const movementY = event.movementY || 0;
+
+            euler.setFromQuaternion(camera.quaternion);
+            euler.y -= movementX * sensitivity * valorantYaw * (Math.PI / 180);
+            euler.x -= movementY * sensitivity * valorantYaw * (Math.PI / 180);
+            euler.x = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, euler.x));
+            camera.quaternion.setFromEuler(euler);
+        }
+
+        const raycaster = new THREE.Raycaster();
+        function onMouseDown(event) {
+            if (!isPlaying || event.button !== 0) return; // 0: left click
+            
+            totalShots++;
+            raycaster.setFromCamera({ x: 0, y: 0 }, camera); // Ray from center of screen
+            const intersects = raycaster.intersectObjects(targets);
+
+            if (intersects.length > 0) {
+                const target = intersects[0].object;
+                scene.remove(target);
+                targets = targets.filter(t => t !== target);
+                
+                score++;
+                hitShots++;
+                document.getElementById('score').textContent = score;
+                
+                spawnTarget();
+            }
+        }
+
+        function spawnTarget() {
+            const geometry = new THREE.SphereGeometry(0.5, 32, 16);
+            const material = new THREE.MeshStandardMaterial({ color: 0xff4655 });
+            const target = new THREE.Mesh(geometry, material);
+
+            target.position.set(
+                (Math.random() - 0.5) * 30, // x
+                Math.random() * 5 + 1,       // y (地面より上)
+                (Math.random() - 0.5) * 30  // z
+            );
+            
+            scene.add(target);
+            targets.push(target);
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            renderer.render(scene, camera);
+        }
+
+        init();
+        updateEdpi();
+    </script>
+</body>
+</html>
